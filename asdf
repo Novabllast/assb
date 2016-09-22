@@ -1,1 +1,240 @@
-asdfasdfasdf
+package com.bitmovin.tasks;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.UUID;
+
+import org.eclipse.jgit.api.CheckoutCommand;
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.api.errors.InvalidRemoteException;
+import org.eclipse.jgit.api.errors.TransportException;
+import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.lib.RepositoryCache;
+import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
+import org.eclipse.jgit.util.FS;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.repository.CrudRepository;
+
+import com.bitmovin.config.TestConfig;
+import com.bitmovin.model.ResultData;
+import com.bitmovin.repository.TestRepository;
+
+public class TestRunTask implements Runnable
+{
+
+    private static final Logger log = LoggerFactory.getLogger(TestRunTask.class);
+
+    private static final String PATH_SEP = File.separator;
+    private static final String FOLDER_NAME = "bitmovin-java-internal";
+    private static final String LOCAL_REPOSITORY_URL = "Repositories";
+    private static final String PATH_TO_GIT_FOLDER = LOCAL_REPOSITORY_URL + PATH_SEP + FOLDER_NAME + PATH_SEP + ".git";
+    private static final String REMOTE_REPOSITORY_URL = "https://github.com/Timelord-Victorious/assb.git";
+
+    private TestRepository repository;
+    private ResultData resultData;
+
+    private TestConfig config;
+
+    public TestRunTask(TestRepository repository, TestConfig config, ResultData result)
+    {
+        this.resultData = result;
+        this.repository = repository;
+        this.config = config;
+
+        if (RepositoryCache.FileKey.isGitRepository(new File(PATH_TO_GIT_FOLDER), FS.DETECTED))
+            checkoutRepo(PATH_TO_GIT_FOLDER);
+        else
+            cloneRemoteRepo(REMOTE_REPOSITORY_URL);
+    }
+
+    @Override
+    public void run()
+    {
+        indicateInProgress(resultData, repository);
+        if (true)
+            return;
+        try
+        {
+            executeCommandLine("mvn").waitFor();
+            System.out.println(8);
+            boolean store = config.isStoreInDB();
+            List<String> tests = config.getTests();
+            String mvn = "C:\\Program Files\\Apache\\apache-maven-3.3.9\\bin\\mvn.cmd test -Dtest=" + tests + " -DargLine='-Ddb=" + store + "'";
+
+            if (config.isPausedScheduledTask())
+                return;
+
+            System.out.println(mvn);
+            mvn = "mvn";
+            executeCommandLine(mvn);
+        }
+        catch (InterruptedException e)
+        {
+            log.error(e.getMessage());
+            indicateError(resultData, repository, e.getMessage());
+        }
+
+    }
+
+    private void checkoutRepo(String pathToGitFolder)
+    {
+        try
+        {
+            Git git = Git.open(new File(pathToGitFolder));
+            System.out.println(git.getRepository().getFullBranch());
+            CheckoutCommand x = git.checkout();
+            System.out.println(x.getResult());
+            System.out.println(x.getRepository());
+        }
+        catch (IOException e)
+        {
+            e.printStackTrace();
+        }
+    }
+
+    public void cloneRemoteRepo(String url)
+    {
+        try
+        {
+            File localPath = new File(LOCAL_REPOSITORY_URL, FOLDER_NAME);
+            localPath.delete();
+            log.info("Cloning from " + url + " to " + localPath);
+            Git repo = Git.cloneRepository().setURI(url).setDirectory(localPath).setBranch("develop").call();
+            log.info("Having repository: " + repo.getRepository().getDirectory());
+            // Note: the call() returns an opened repository already which needs to be closed to avoid file handle leaks!
+            repo.close();
+        }
+        catch (InvalidRemoteException e)
+        {
+            e.printStackTrace();
+        }
+        catch (TransportException e)
+        {
+            e.printStackTrace();
+        }
+        catch (GitAPIException e)
+        {
+            e.printStackTrace();
+        }
+    }
+
+    static Git openOrCreate(File gitDirectory) throws IOException, GitAPIException
+    {
+        Git git;
+        FileRepositoryBuilder repositoryBuilder = new FileRepositoryBuilder();
+        repositoryBuilder.addCeilingDirectory(gitDirectory);
+        repositoryBuilder.findGitDir(gitDirectory);
+        if (repositoryBuilder.getGitDir() == null)
+        {
+            git = Git.init().setDirectory(gitDirectory.getParentFile()).call();
+        }
+        else
+        {
+            git = new Git(repositoryBuilder.build());
+        }
+        return git;
+    }
+
+    public Process executeCommandLine(String command)
+    {
+        System.out.println(command);
+        try
+        {
+            Process process = Runtime.getRuntime().exec(command);
+            final InputStream stream = process.getInputStream();
+            new Thread(new Runnable()
+            {
+                public void run()
+                {
+                    System.out.println(1);
+                    String output = "";
+                    BufferedReader reader = null;
+                    try
+                    {
+                        reader = new BufferedReader(new InputStreamReader(stream));
+                        String line = null;
+                        System.out.println(2);
+                        while ((line = reader.readLine()) != null)
+                        {
+                            System.out.println(line);
+                            output += line;
+                        }
+
+                    }
+                    catch (IOException e)
+                    {
+                        log.error(e.getMessage());
+                        indicateError(resultData, repository, e.getMessage());
+                        e.printStackTrace();
+                    }
+                    finally
+                    {
+                        System.out.println(3);
+                        if (reader != null)
+                            try
+                            {
+                                reader.close();
+                            }
+                            catch (IOException e)
+                            {
+                                log.error(e.getMessage());
+                                indicateError(resultData, repository, e.getMessage());
+                                e.printStackTrace();
+                            }
+                    }
+
+                    try
+                    {
+                        System.out.println(4);
+                        process.getOutputStream().close();
+                        process.getInputStream().close();
+                    }
+                    catch (IOException e)
+                    {
+                        // ignore
+                    }
+                    finally
+                    {
+                        System.out.println(5);
+                        process.destroy();
+                    }
+                    resultData.setInfo(output);
+                    indicateFinished(resultData, repository);
+                    System.out.println(6);
+                }
+            }).start();
+        }
+        catch (IOException e)
+        {
+            log.error(e.getMessage());
+            indicateError(resultData, repository, e.getMessage());
+            e.printStackTrace();
+        }
+
+        return null;
+
+    }
+
+    public void indicateInProgress(ResultData resultData, CrudRepository<ResultData, UUID> repository)
+    {
+        repository.save(resultData);
+    }
+
+    public void indicateFinished(ResultData resultData, CrudRepository<ResultData, UUID> repository)
+    {
+        repository.save(resultData);
+    }
+
+    public void indicateError(ResultData resultData, CrudRepository<ResultData, UUID> repository, String message)
+    {
+        resultData.setError(message);
+        repository.save(resultData);
+    }
+}
