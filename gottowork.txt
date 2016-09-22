@@ -1,0 +1,11 @@
+e.printStackTrace();
+        }
+        catch (RefAlreadyExistsException e)
+        {
+            e.printStackTrace();
+        }
+        catch (RefNotFoundException e)
+        {mmand fetchingCommand = git.fetch();
+           log.info("Fetching from " + fetchingCommand.getRemote());
+           FetchResult fetchingResult = fetchingCommand.call();
+           log.info("Mes
